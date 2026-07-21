@@ -866,18 +866,26 @@ function getWhoopToken() {
   return localStorage.getItem('whoop_access_token')
 }
 
-async function whoopGet(path) {
-  const token = getWhoopToken()
-  if (!token) throw new Error('No Whoop token — connect Whoop first in Settings')
-  const res = await fetch(WHOOP_BASE + path, {
-    headers: { 'Authorization': 'Bearer ' + token }
+async function refreshWhoopToken() {
+  const refreshToken = localStorage.getItem('whoop_refresh_token')
+  if (!refreshToken) throw new Error('No refresh token — reconnect Whoop in Settings')
+  const res = await fetch('https://matty-7.vercel.app/api/whoop/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken })
   })
-  if (res.status === 401) {
-    localStorage.removeItem('whoop_access_token')
-    throw new Error('Whoop token expired — reconnect in Settings')
-  }
-  if (!res.ok) throw new Error('Whoop API error: ' + res.status)
-  return res.json()
+  if (!res.ok) throw new Error('Token refresh failed — reconnect Whoop in Settings')
+  const data = await res.json()
+  if (!data.access_token) throw new Error('No token in refresh response')
+  localStorage.setItem('whoop_access_token', data.access_token)
+  if (data.refresh_token) localStorage.setItem('whoop_refresh_token', data.refresh_token)
+  return data.access_token
+}
+
+async function getValidToken() {
+  let token = getWhoopToken()
+  if (!token) token = await refreshWhoopToken()
+  return token
 }
 
 async function syncWhoop() {
@@ -887,15 +895,23 @@ async function syncWhoop() {
   let synced = { recovery: 0, sleep: 0, workouts: 0 }
 
   try {
-    const token = getWhoopToken()
-    if (!token) throw new Error('No token — connect Whoop in Settings')
+    let token = await getValidToken()
 
     // Call Vercel proxy to avoid CORS
-    const res = await fetch('https://matty-7.vercel.app/api/whoop/sync', {
+    let res = await fetch('https://matty-7.vercel.app/api/whoop/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token })
     })
+    // Auto-refresh token if expired
+    if (res.status === 401) {
+      token = await refreshWhoopToken()
+      res = await fetch('https://matty-7.vercel.app/api/whoop/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token })
+      })
+    }
     if (!res.ok) throw new Error('Proxy error: ' + res.status)
     const { recovery, sleep, workouts } = await res.json()
 
