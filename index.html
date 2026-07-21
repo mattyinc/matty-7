@@ -743,8 +743,15 @@ async function loadAnalytics() {
 
 // ── WHOOP ──
 function connectWhoop() {
-  const url='https://api.prod.whoop.com/oauth/oauth2/auth?response_type=code&client_id='+WHOOP_CLIENT+'&redirect_uri='+encodeURIComponent('https://mattyinc.github.io/matty-7/auth/callback')+'&scope='+encodeURIComponent('read:recovery read:sleep read:workout read:profile read:body_measurement')
-  window.open(url,'_blank')
+  const state = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+  localStorage.setItem('whoop_state', state)
+  const url = 'https://api.prod.whoop.com/oauth/oauth2/auth'
+    + '?response_type=code'
+    + '&client_id=' + WHOOP_CLIENT
+    + '&redirect_uri=' + encodeURIComponent('https://mattyinc.github.io/matty-7/auth/callback.html')
+    + '&scope=' + encodeURIComponent('read:recovery read:sleep read:workout read:profile read:body_measurement')
+    + '&state=' + state
+  window.location.href = url
 }
 if (window.location.hash.includes('whoop_connected')) {
   document.getElementById('whoopStatus').innerHTML='<span class="badge-on">Connected</span>'
