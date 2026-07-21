@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Connecting Whoop...</title>
 <style>
-  body{margin:0;background:#000;color:#fff;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center;padding:20px;}
-  .wrap{max-width:320px;}
-  .icon{font-size:48px;margin-bottom:16px;}
-  h1{font-size:22px;font-weight:700;margin-bottom:8px;}
-  p{font-size:15px;color:rgba(255,255,255,.6);line-height:1.5;margin-bottom:24px;}
-  .btn{display:inline-block;background:#fff;color:#000;font-size:14px;font-weight:700;padding:14px 28px;border-radius:100px;text-decoration:none;cursor:pointer;border:none;}
-  .error{color:#FF3B30;}
-  .success{color:#34C759;}
+body{margin:0;background:#000;color:#fff;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center;padding:20px;}
+.wrap{max-width:340px;}
+.icon{font-size:56px;margin-bottom:16px;}
+h1{font-size:22px;font-weight:700;margin-bottom:10px;}
+p{font-size:15px;color:rgba(255,255,255,.6);line-height:1.6;margin-bottom:24px;}
+.btn{display:inline-block;background:#fff;color:#000;font-size:14px;font-weight:700;padding:14px 32px;border-radius:100px;text-decoration:none;border:none;cursor:pointer;}
+.success{color:#34C759;}
+.error{color:#FF3B30;}
 </style>
 </head>
 <body>
@@ -23,60 +23,67 @@
   <div id="action"></div>
 </div>
 <script>
+const CLIENT_ID = 'cfb9e9ce-57a9-4ef9-9970-5b9994bd23a3'
+const CLIENT_SECRET = '379c0ea71937c45c2cd11a8fc86cc8cbc2d405cff1581580a640178766402932'
+const REDIRECT_URI = 'https://mattyinc.github.io/matty-7/auth/callback.html'
+const APP_URL = 'https://mattyinc.github.io/matty-7'
+
 const params = new URLSearchParams(window.location.search)
 const error = params.get('error')
 const code = params.get('code')
-const state = params.get('state')
-const savedState = localStorage.getItem('whoop_state')
+
+function setUI(icon, title, msg, actionHTML) {
+  document.getElementById('icon').textContent = icon
+  document.getElementById('title').textContent = title
+  document.getElementById('msg').innerHTML = msg
+  document.getElementById('action').innerHTML = actionHTML || ''
+}
 
 if (error) {
-  document.getElementById('icon').textContent = '❌'
-  document.getElementById('title').textContent = 'Connection Failed'
-  document.getElementById('msg').innerHTML = '<span class="error">' + (params.get('error_description') || error) + '</span>'
-  document.getElementById('action').innerHTML = '<a class="btn" href="https://mattyinc.github.io/matty-7">← Back to App</a>'
+  setUI('❌', 'Connection Failed',
+    '<span class="error">' + (params.get('error_description') || error) + '</span>',
+    '<a class="btn" href="' + APP_URL + '">← Back to App</a>')
 } else if (!code) {
-  document.getElementById('icon').textContent = '❓'
-  document.getElementById('title').textContent = 'No Code'
-  document.getElementById('msg').textContent = 'No authorization code received.'
-  document.getElementById('action').innerHTML = '<a class="btn" href="https://mattyinc.github.io/matty-7">← Back to App</a>'
+  setUI('❓', 'No Code', 'No authorization code received.',
+    '<a class="btn" href="' + APP_URL + '">← Back to App</a>')
 } else {
-  // State check (optional — warn but don't block)
-  if (savedState && state !== savedState) {
-    console.warn('State mismatch — possible CSRF')
-  }
-  localStorage.removeItem('whoop_state')
-
-  // Store the auth code — Vercel will exchange it, or we do it client-side
-  localStorage.setItem('whoop_auth_code', code)
-
-  // Try Vercel token exchange first
   exchangeToken(code)
 }
 
 async function exchangeToken(code) {
   try {
-    const res = await fetch('https://matty-7.vercel.app/api/whoop/callback?code=' + encodeURIComponent(code))
-    if (res.ok) {
-      // Vercel handled it — redirect back
-      document.getElementById('icon').textContent = '✅'
-      document.getElementById('title').textContent = 'Whoop Connected!'
-      document.getElementById('msg').innerHTML = '<span class="success">Your recovery, sleep and workout data will now sync automatically.</span>'
-      document.getElementById('action').innerHTML = '<a class="btn" href="https://mattyinc.github.io/matty-7">Open Matty 7.0 →</a>'
+    const res = await fetch('https://api.prod.whoop.com/oauth/oauth2/token', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: code,
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+        redirect_uri: REDIRECT_URI
+      })
+    })
+    const data = await res.json()
+
+    if (data.access_token) {
+      localStorage.setItem('whoop_access_token', data.access_token)
+      localStorage.setItem('whoop_refresh_token', data.refresh_token || '')
       localStorage.setItem('whoop_connected', '1')
-      setTimeout(() => { window.location.href = 'https://mattyinc.github.io/matty-7' }, 2000)
-      return
+      setUI('✅', 'Whoop Connected!',
+        '<span class="success">Syncing your data now...</span>',
+        '<a class="btn" href="' + APP_URL + '">Open Matty 7.0 →</a>')
+      setTimeout(() => { window.location.href = APP_URL }, 1500)
+    } else {
+      throw new Error(data.error_description || data.error || JSON.stringify(data))
     }
   } catch(e) {
-    console.log('Vercel not available, using direct exchange')
+    // CORS likely blocked client-side exchange — store code for Vercel to handle
+    // But we can still store it and let the app pick it up
+    localStorage.setItem('whoop_auth_code', code)
+    setUI('⚠️', 'One More Step',
+      'Direct exchange blocked by CORS. Tap below — the app will complete the connection via your stored code.',
+      '<a class="btn" href="' + APP_URL + '#setup_whoop">Complete in App →</a>')
   }
-
-  // Vercel not set up yet — do client-side token exchange via CORS proxy
-  // Store code and redirect, app will handle it
-  localStorage.setItem('whoop_auth_code', code)
-  document.getElementById('icon').textContent = '✅'
-  document.getElementById('title').textContent = 'Almost there!'
-  document.getElementById('msg').textContent = 'Authorization received. Tap below to complete setup.'
-  document.getElementById('action').innerHTML = '<a class="btn" href="https://mattyinc.github.io/matty-7#whoop_code=' + encodeURIComponent(code) + '">Complete Setup →</a>'
 }
 </script>
 </body>
