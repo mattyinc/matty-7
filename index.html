@@ -753,10 +753,35 @@ function connectWhoop() {
     + '&state=' + state
   window.location.href = url
 }
+// Check Whoop connection status
+function updateWhoopStatus() {
+  const token = localStorage.getItem('whoop_access_token')
+  const el = document.getElementById('whoopStatus')
+  if (!el) return
+  if (token) {
+    el.innerHTML = '<span class="badge-on">Connected</span> <button class="connect-link" style="margin-left:8px;color:var(--red);font-size:12px;" onclick="disconnectWhoop()">Disconnect</button>'
+  } else {
+    el.innerHTML = '<button class="connect-link" onclick="connectWhoop()">Connect</button> <button class="connect-link" style="color:var(--muted);font-size:12px;" onclick="pasteToken()">Paste token</button>'
+  }
+}
+function disconnectWhoop() {
+  if (!confirm('Disconnect Whoop?')) return
+  localStorage.removeItem('whoop_access_token')
+  localStorage.removeItem('whoop_refresh_token')
+  updateWhoopStatus()
+}
+function pasteToken() {
+  const t = prompt('Paste Whoop access_token:')
+  if (t && t.length > 20) {
+    localStorage.setItem('whoop_access_token', t.trim())
+    updateWhoopStatus()
+    alert('Token saved. Tap Sync now.')
+  }
+}
 if (window.location.hash.includes('whoop_connected')) {
-  document.getElementById('whoopStatus').innerHTML='<span class="badge-on">Connected</span>'
   history.replaceState(null,'',window.location.pathname)
 }
+updateWhoopStatus()
 
 // ── LOG MODAL ──
 let logMode='run', exercises=[]
@@ -834,10 +859,126 @@ async function clearData() {
   for (const t of tables) await db.from(t).delete().neq('id','00000000-0000-0000-0000-000000000000')
   alert('Cleared')
 }
+// ── WHOOP SYNC ──
+const WHOOP_BASE = 'https://api.prod.whoop.com/developer/v2'
+
+function getWhoopToken() {
+  return localStorage.getItem('whoop_access_token')
+}
+
+async function whoopGet(path) {
+  const token = getWhoopToken()
+  if (!token) throw new Error('No Whoop token — connect Whoop first in Settings')
+  const res = await fetch(WHOOP_BASE + path, {
+    headers: { 'Authorization': 'Bearer ' + token }
+  })
+  if (res.status === 401) {
+    localStorage.removeItem('whoop_access_token')
+    throw new Error('Whoop token expired — reconnect in Settings')
+  }
+  if (!res.ok) throw new Error('Whoop API error: ' + res.status)
+  return res.json()
+}
+
+async function syncWhoop() {
+  const btn = document.querySelector('.sync-btn')
+  btn.textContent = '↻ Syncing...'
+  btn.disabled = true
+  let synced = { recovery: 0, sleep: 0, workouts: 0 }
+  let errors = []
+
+  try {
+    // ── RECOVERY ──
+    try {
+      const data = await whoopGet('/recovery?limit=14')
+      const records = data.records || []
+      for (const r of records) {
+        if (!r.score) continue
+        const date = (r.created_at || r.updated_at || '').slice(0, 10)
+        if (!date) continue
+        await db.from('recovery').upsert({
+          date,
+          recovery_score: Math.round(r.score.recovery_score || 0),
+          hrv_ms: r.score.hrv_rmssd_milli || null,
+          resting_hr: r.score.resting_heart_rate || null,
+          skin_temp_celsius: r.score.skin_temp_celsius || null,
+          spo2_pct: r.score.spo2_percentage || null
+        }, { onConflict: 'date' })
+        synced.recovery++
+      }
+    } catch(e) { errors.push('Recovery: ' + e.message) }
+
+    // ── SLEEP ──
+    try {
+      const data = await whoopGet('/activity/sleep?limit=14')
+      const records = data.records || []
+      for (const r of records) {
+        if (!r.score) continue
+        const date = (r.start || '').slice(0, 10)
+        if (!date) continue
+        const ss = r.score.stage_summary || {}
+        const toHrs = ms => ms ? +(ms / 3600000).toFixed(2) : null
+        await db.from('sleep').upsert({
+          date,
+          total_hours: toHrs(ss.total_in_bed_time_milli),
+          deep_hours: toHrs(ss.total_slow_wave_sleep_time_milli),
+          rem_hours: toHrs(ss.total_rem_sleep_time_milli),
+          light_hours: toHrs(ss.total_light_sleep_time_milli),
+          awake_minutes: ss.total_awake_time_milli ? Math.round(ss.total_awake_time_milli / 60000) : null,
+          sleep_score: r.score.sleep_performance_percentage || null,
+          respiratory_rate: r.score.respiratory_rate || null
+        }, { onConflict: 'date' })
+        synced.sleep++
+      }
+    } catch(e) { errors.push('Sleep: ' + e.message) }
+
+    // ── WORKOUTS ──
+    try {
+      const data = await whoopGet('/activity/workout?limit=20')
+      const records = data.records || []
+      for (const r of records) {
+        const date = (r.start || '').slice(0, 10)
+        if (!date) continue
+        // Sport IDs: 63=strength, 1=functional fitness, 45=weightlifting
+        const strengthIds = [63, 1, 45, 46, 47, 71]
+        if (!strengthIds.includes(r.sport_id)) continue
+        const dur = r.start && r.end ? Math.round((new Date(r.end) - new Date(r.start)) / 60000) : null
+        const { data: session } = await db.from('gym_sessions').upsert({
+          whoop_activity_id: r.id,
+          date,
+          start_time: r.start,
+          end_time: r.end,
+          duration_minutes: dur,
+          strain: r.score?.strain || null,
+          avg_hr: r.score?.average_heart_rate || null,
+          max_hr: r.score?.max_heart_rate || null,
+          calories: r.score?.kilojoule ? Math.round(r.score.kilojoule * 0.239) : null
+        }, { onConflict: 'whoop_activity_id', ignoreDuplicates: false })
+        synced.workouts++
+      }
+    } catch(e) { errors.push('Workouts: ' + e.message) }
+
+    // Done
+    const msg = `Synced: ${synced.recovery} recovery, ${synced.sleep} sleep, ${synced.workouts} gym sessions`
+    const errMsg = errors.length ? '\n\nErrors: ' + errors.join(', ') : ''
+    alert(msg + errMsg)
+    loadToday()
+
+  } catch(e) {
+    alert('Sync failed: ' + e.message)
+  } finally {
+    btn.textContent = '↻ Sync'
+    btn.disabled = false
+  }
+}
+
 async function syncAll() {
-  const btn=document.querySelector('.sync-btn')
-  btn.textContent='↻ ...'
-  setTimeout(()=>{ btn.textContent='↻ Sync'; loadToday() },1500)
+  const token = getWhoopToken()
+  if (!token) {
+    if (confirm('Whoop not connected. Connect now?')) showPage('settings')
+    return
+  }
+  await syncWhoop()
 }
 
 // ── INIT ──
