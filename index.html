@@ -885,83 +885,77 @@ async function syncWhoop() {
   btn.textContent = '↻ Syncing...'
   btn.disabled = true
   let synced = { recovery: 0, sleep: 0, workouts: 0 }
-  let errors = []
 
   try {
-    // ── RECOVERY ──
-    try {
-      const data = await whoopGet('/recovery?limit=14')
-      const records = data.records || []
-      for (const r of records) {
-        if (!r.score) continue
-        const date = (r.created_at || r.updated_at || '').slice(0, 10)
-        if (!date) continue
-        await db.from('recovery').upsert({
-          date,
-          recovery_score: Math.round(r.score.recovery_score || 0),
-          hrv_ms: r.score.hrv_rmssd_milli || null,
-          resting_hr: r.score.resting_heart_rate || null,
-          skin_temp_celsius: r.score.skin_temp_celsius || null,
-          spo2_pct: r.score.spo2_percentage || null
-        }, { onConflict: 'date' })
-        synced.recovery++
-      }
-    } catch(e) { errors.push('Recovery: ' + e.message) }
+    const token = getWhoopToken()
+    if (!token) throw new Error('No token — connect Whoop in Settings')
 
-    // ── SLEEP ──
-    try {
-      const data = await whoopGet('/activity/sleep?limit=14')
-      const records = data.records || []
-      for (const r of records) {
-        if (!r.score) continue
-        const date = (r.start || '').slice(0, 10)
-        if (!date) continue
-        const ss = r.score.stage_summary || {}
-        const toHrs = ms => ms ? +(ms / 3600000).toFixed(2) : null
-        await db.from('sleep').upsert({
-          date,
-          total_hours: toHrs(ss.total_in_bed_time_milli),
-          deep_hours: toHrs(ss.total_slow_wave_sleep_time_milli),
-          rem_hours: toHrs(ss.total_rem_sleep_time_milli),
-          light_hours: toHrs(ss.total_light_sleep_time_milli),
-          awake_minutes: ss.total_awake_time_milli ? Math.round(ss.total_awake_time_milli / 60000) : null,
-          sleep_score: r.score.sleep_performance_percentage || null,
-          respiratory_rate: r.score.respiratory_rate || null
-        }, { onConflict: 'date' })
-        synced.sleep++
-      }
-    } catch(e) { errors.push('Sleep: ' + e.message) }
+    // Call Vercel proxy to avoid CORS
+    const res = await fetch('https://matty-7.vercel.app/api/whoop/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token })
+    })
+    if (!res.ok) throw new Error('Proxy error: ' + res.status)
+    const { recovery, sleep, workouts } = await res.json()
 
-    // ── WORKOUTS ──
-    try {
-      const data = await whoopGet('/activity/workout?limit=20')
-      const records = data.records || []
-      for (const r of records) {
-        const date = (r.start || '').slice(0, 10)
-        if (!date) continue
-        // Sport IDs: 63=strength, 1=functional fitness, 45=weightlifting
-        const strengthIds = [63, 1, 45, 46, 47, 71]
-        if (!strengthIds.includes(r.sport_id)) continue
-        const dur = r.start && r.end ? Math.round((new Date(r.end) - new Date(r.start)) / 60000) : null
-        const { data: session } = await db.from('gym_sessions').upsert({
-          whoop_activity_id: r.id,
-          date,
-          start_time: r.start,
-          end_time: r.end,
-          duration_minutes: dur,
-          strain: r.score?.strain || null,
-          avg_hr: r.score?.average_heart_rate || null,
-          max_hr: r.score?.max_heart_rate || null,
-          calories: r.score?.kilojoule ? Math.round(r.score.kilojoule * 0.239) : null
-        }, { onConflict: 'whoop_activity_id', ignoreDuplicates: false })
-        synced.workouts++
-      }
-    } catch(e) { errors.push('Workouts: ' + e.message) }
+    // ── Push RECOVERY to Supabase ──
+    for (const r of (recovery.records || [])) {
+      if (!r.score) continue
+      const date = (r.created_at || r.updated_at || '').slice(0, 10)
+      if (!date) continue
+      await db.from('recovery').upsert({
+        date,
+        recovery_score: Math.round(r.score.recovery_score || 0),
+        hrv_ms: r.score.hrv_rmssd_milli || null,
+        resting_hr: r.score.resting_heart_rate || null,
+        skin_temp_celsius: r.score.skin_temp_celsius || null,
+        spo2_pct: r.score.spo2_percentage || null
+      }, { onConflict: 'date' })
+      synced.recovery++
+    }
 
-    // Done
-    const msg = `Synced: ${synced.recovery} recovery, ${synced.sleep} sleep, ${synced.workouts} gym sessions`
-    const errMsg = errors.length ? '\n\nErrors: ' + errors.join(', ') : ''
-    alert(msg + errMsg)
+    // ── Push SLEEP to Supabase ──
+    for (const r of (sleep.records || [])) {
+      if (!r.score) continue
+      const date = (r.start || '').slice(0, 10)
+      if (!date) continue
+      const ss = r.score.stage_summary || {}
+      const toHrs = ms => ms ? +(ms / 3600000).toFixed(2) : null
+      await db.from('sleep').upsert({
+        date,
+        total_hours: toHrs(ss.total_in_bed_time_milli),
+        deep_hours: toHrs(ss.total_slow_wave_sleep_time_milli),
+        rem_hours: toHrs(ss.total_rem_sleep_time_milli),
+        light_hours: toHrs(ss.total_light_sleep_time_milli),
+        awake_minutes: ss.total_awake_time_milli ? Math.round(ss.total_awake_time_milli / 60000) : null,
+        sleep_score: r.score.sleep_performance_percentage || null,
+        respiratory_rate: r.score.respiratory_rate || null
+      }, { onConflict: 'date' })
+      synced.sleep++
+    }
+
+    // ── Push WORKOUTS to Supabase ──
+    const strengthIds = [63, 1, 45, 46, 47, 71]
+    for (const r of (workouts.records || [])) {
+      const date = (r.start || '').slice(0, 10)
+      if (!date || !strengthIds.includes(r.sport_id)) continue
+      const dur = r.start && r.end ? Math.round((new Date(r.end) - new Date(r.start)) / 60000) : null
+      await db.from('gym_sessions').upsert({
+        whoop_activity_id: r.id,
+        date,
+        start_time: r.start,
+        end_time: r.end,
+        duration_minutes: dur,
+        strain: r.score?.strain || null,
+        avg_hr: r.score?.average_heart_rate || null,
+        max_hr: r.score?.max_heart_rate || null,
+        calories: r.score?.kilojoule ? Math.round(r.score.kilojoule * 0.239) : null
+      }, { onConflict: 'whoop_activity_id' })
+      synced.workouts++
+    }
+
+    alert(`Synced: ${synced.recovery} recovery, ${synced.sleep} sleep, ${synced.workouts} gym sessions`)
     loadToday()
 
   } catch(e) {
