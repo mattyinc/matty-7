@@ -162,7 +162,11 @@
     <div class="settings-list">
       <div class="settings-row">
         <div class="sr-left"><div class="sr-icon" style="background:#FC4C02;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="14" cy="4.5" r="2"/><path d="m12 8-3 4 4 2 2.5 6M12 8l4 3 3-1M9 12l-5 6"/></svg></div><span class="sr-label">Strava</span></div>
-        <div id="stravaStatus"><span class="badge-off">Via webhook</span></div>
+        <div id="stravaStatus"><button class="connect-link" onclick="connectStrava()">Connect →</button></div>
+      </div>
+      <div class="settings-row">
+        <span class="sr-label">Last Strava sync</span>
+        <span class="integration-detail" id="stravaSyncStatus">Never</span>
       </div>
       <div class="settings-row">
         <div class="sr-left"><div class="sr-icon" style="background:#000;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="7" y="5" width="10" height="14" rx="3"/><path d="M9 5V2h6v3M9 19v3h6v-3"/></svg></div><span class="sr-label">Whoop</span></div>
@@ -515,6 +519,46 @@ async function loadAnalytics() {
   document.getElementById('volList').innerHTML=Object.entries(byWeek).sort((a,b)=>b[0].localeCompare(a[0])).slice(0,6).map(([wk,km])=>'<div class="vol-row"><span class="vol-wk">Wk of '+wk+'</span><span class="vol-km">'+km.toFixed(1)+' km</span></div>').join('')||'<div style="color:var(--muted);font-size:14px;">No data yet</div>'
 }
 
+// ── STRAVA ──
+function connectStrava() {
+  const state = Array.from(crypto.getRandomValues(new Uint8Array(8)), byte => (byte % 36).toString(36)).join('')
+  localStorage.setItem('strava_state', state)
+  window.location.href = API_BASE + '/api/strava/authorize?state=' + encodeURIComponent(state)
+}
+
+function updateStravaSyncStatus(message, isError = false) {
+  const el = document.getElementById('stravaSyncStatus')
+  if (!el) return
+  el.textContent = message
+  el.style.color = isError ? 'var(--red)' : 'var(--muted)'
+}
+
+function updateStravaStatus() {
+  const token = localStorage.getItem('strava_access_token')
+  const el = document.getElementById('stravaStatus')
+  if (!el) return
+  if (token) {
+    el.innerHTML = '<span class="badge-on">Connected</span> <button class="connect-link" style="margin-left:8px;color:var(--red);font-size:12px;" onclick="disconnectStrava()">Disconnect</button>'
+    const lastSync = localStorage.getItem('strava_last_sync')
+    updateStravaSyncStatus(lastSync ? new Date(lastSync).toLocaleString() : 'Connected · not synced')
+  } else {
+    el.innerHTML = '<button class="connect-link" onclick="connectStrava()">Connect</button>'
+    updateStravaSyncStatus('Not connected')
+  }
+}
+
+function disconnectStrava() {
+  if (!confirm('Disconnect Strava?')) return
+  for (const key of ['strava_access_token', 'strava_refresh_token', 'strava_token_expires_at', 'strava_scope', 'strava_connected']) {
+    localStorage.removeItem(key)
+  }
+  updateStravaStatus()
+}
+
+const stravaJustConnected = window.location.hash.includes('strava_connected')
+if (stravaJustConnected) history.replaceState(null, '', window.location.pathname)
+updateStravaStatus()
+
 // ── WHOOP ──
 function connectWhoop() {
   const state = Array.from(crypto.getRandomValues(new Uint8Array(8)), byte => (byte % 36).toString(36)).join('')
@@ -701,6 +745,97 @@ function setSyncButtonState(syncing) {
   return button
 }
 
+async function refreshStravaToken() {
+  const refreshToken = localStorage.getItem('strava_refresh_token')
+  if (!refreshToken) throw new Error('No Strava refresh token — reconnect Strava in Settings')
+  const response = await fetch(API_BASE + '/api/strava/callback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'refresh', refresh_token: refreshToken })
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok || !data.access_token) throw new Error(data.error || 'Strava token refresh failed')
+  localStorage.setItem('strava_access_token', data.access_token)
+  localStorage.setItem('strava_refresh_token', data.refresh_token || refreshToken)
+  localStorage.setItem('strava_token_expires_at', String((data.expires_at || 0) * 1000))
+  return data.access_token
+}
+
+async function getValidStravaToken() {
+  let token = localStorage.getItem('strava_access_token')
+  const expiresAt = Number(localStorage.getItem('strava_token_expires_at') || 0)
+  if (!token || (expiresAt && expiresAt <= Date.now() + 3600000)) token = await refreshStravaToken()
+  return token
+}
+
+function inferRunType(activity) {
+  const text = `${activity.name || ''} ${activity.workout_type || ''}`.toLowerCase()
+  if (text.includes('race') || activity.workout_type === 1) return 'race'
+  if (text.includes('interval') || text.includes('repeat')) return 'interval'
+  if (text.includes('tempo') || text.includes('threshold')) return 'tempo'
+  if (text.includes('long')) return 'long'
+  return 'easy'
+}
+
+async function syncStrava() {
+  setSyncButtonState(true)
+  updateStravaSyncStatus('Importing runs…')
+  try {
+    let token = await getValidStravaToken()
+    const requestActivities = currentToken => fetch(API_BASE + '/api/strava/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: currentToken,
+        after: Math.floor(Date.now() / 1000) - (90 * 86400)
+      })
+    })
+    let response = await requestActivities(token)
+    if (response.status === 401) {
+      token = await refreshStravaToken()
+      response = await requestActivities(token)
+    }
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(data.error || `Strava sync failed (${response.status})`)
+
+    let imported = 0
+    for (const activity of (data.activities || [])) {
+      const distanceKm = Number(activity.distance || 0) / 1000
+      if (!activity.id || !activity.start_date_local || distanceKm <= 0) continue
+      const cadence = activity.average_cadence
+        ? Math.round(activity.average_cadence < 120 ? activity.average_cadence * 2 : activity.average_cadence)
+        : null
+      const { error } = await db.from('runs').upsert({
+        strava_id: activity.id,
+        date: activity.start_date_local.slice(0, 10),
+        session_type: inferRunType(activity),
+        distance_km: +distanceKm.toFixed(2),
+        duration_seconds: activity.moving_time || activity.elapsed_time || null,
+        avg_pace_sec_per_km: activity.moving_time ? Math.round(activity.moving_time / distanceKm) : null,
+        avg_hr: activity.average_heartrate ? Math.round(activity.average_heartrate) : null,
+        max_hr: activity.max_heartrate ? Math.round(activity.max_heartrate) : null,
+        avg_cadence: cadence,
+        avg_power: activity.average_watts ? Math.round(activity.average_watts) : null,
+        elevation_gain: activity.total_elevation_gain ? Math.round(activity.total_elevation_gain) : null,
+        notes: activity.name || 'Imported from Strava'
+      }, { onConflict: 'strava_id' })
+      if (error) throw new Error('Saving Strava run failed: ' + error.message)
+      imported++
+    }
+
+    const syncedAt = new Date().toISOString()
+    localStorage.setItem('strava_last_sync', syncedAt)
+    updateStravaSyncStatus(`${new Date(syncedAt).toLocaleString()} · ${imported} runs`)
+    await Promise.all([loadToday(), loadRunning()])
+    alert(`Strava synced: ${imported} runs imported from the last 90 days`)
+  } catch (error) {
+    updateStravaSyncStatus(error.message, true)
+    alert('Strava sync failed: ' + error.message)
+  } finally {
+    setSyncButtonState(false)
+  }
+}
+
 async function syncWhoop() {
   const btn = setSyncButtonState(true)
   updateWhoopSyncStatus('Syncing…')
@@ -809,17 +944,20 @@ async function syncWhoop() {
 }
 
 async function syncAll() {
-  const token = getWhoopToken()
-  if (!token) {
-    if (confirm('Whoop not connected. Connect now?')) showPage('settings')
+  const whoopToken = getWhoopToken()
+  const stravaToken = localStorage.getItem('strava_access_token')
+  if (!whoopToken && !stravaToken) {
+    if (confirm('No fitness services are connected. Open Settings?')) showPage('settings')
     return
   }
-  await syncWhoop()
+  if (stravaToken) await syncStrava()
+  if (whoopToken) await syncWhoop()
 }
 
 // ── INIT ──
 loadToday()
 if (whoopJustConnected) setTimeout(syncWhoop, 500)
+if (stravaJustConnected) setTimeout(syncStrava, 500)
 </script>
 </body>
 </html>

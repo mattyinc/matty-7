@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Connecting Strava…</title>
+<style>
+body{margin:0;background:#0d1312;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center;padding:20px;box-sizing:border-box}
+.wrap{max-width:380px}.mark{width:54px;height:54px;margin:0 auto 18px;display:grid;place-items:center;border-radius:16px;background:#fc4c02;font-size:24px;font-weight:800}
+h1{font-size:24px;margin:0 0 10px}p{font-size:15px;color:rgba(255,255,255,.68);line-height:1.55;margin:0 0 24px}.success{color:#72d5b8}.error{color:#ff7c74}
+.btn{display:inline-flex;min-height:46px;align-items:center;background:#fff;color:#111;font-size:14px;font-weight:700;padding:0 24px;border-radius:12px;text-decoration:none}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <div class="mark" aria-hidden="true">S</div>
+  <h1 id="title">Connecting Strava…</h1>
+  <p id="msg">Securely exchanging your authorization code.</p>
+  <div id="action"></div>
+</main>
+<script>
+const API_BASE = 'https://matty-7.vercel.app'
+const REDIRECT_URI = 'https://mattyinc.github.io/matty-7/auth/strava-callback.html'
+const APP_URL = 'https://mattyinc.github.io/matty-7'
+const params = new URLSearchParams(location.search)
+const code = params.get('code')
+const error = params.get('error')
+const returnedState = params.get('state')
+const expectedState = localStorage.getItem('strava_state')
+const grantedScope = params.get('scope') || ''
+
+function setUI(title, message, tone, actionLabel) {
+  document.getElementById('title').textContent = title
+  const msg = document.getElementById('msg')
+  msg.textContent = message
+  msg.className = tone || ''
+  const action = document.getElementById('action')
+  action.textContent = ''
+  if (actionLabel) {
+    const link = document.createElement('a')
+    link.className = 'btn'
+    link.href = APP_URL
+    link.textContent = actionLabel
+    action.appendChild(link)
+  }
+}
+
+if (error) {
+  setUI('Connection declined', params.get('error_description') || error, 'error', 'Back to Matty 7.0')
+} else if (!code) {
+  setUI('No authorization code', 'Strava did not return an authorization code.', 'error', 'Back to Matty 7.0')
+} else if (!expectedState || returnedState !== expectedState) {
+  setUI('Security check failed', 'Start the Strava connection again from Settings.', 'error', 'Back to Matty 7.0')
+} else if (!grantedScope.split(/[,\s]+/).includes('activity:read_all')) {
+  setUI('Activity permission required', 'Reconnect and allow access to activities so runs can be imported.', 'error', 'Back to Matty 7.0')
+} else {
+  localStorage.removeItem('strava_state')
+  exchangeToken()
+}
+
+async function exchangeToken() {
+  try {
+    const response = await fetch(API_BASE + '/api/strava/callback', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        action: 'exchange',
+        code,
+        scope: grantedScope,
+        redirect_uri: REDIRECT_URI
+      })
+    })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok || !data.access_token) throw new Error(data.error || 'Token exchange failed')
+    localStorage.setItem('strava_access_token', data.access_token)
+    localStorage.setItem('strava_refresh_token', data.refresh_token || '')
+    localStorage.setItem('strava_token_expires_at', String((data.expires_at || 0) * 1000))
+    localStorage.setItem('strava_scope', grantedScope)
+    localStorage.setItem('strava_connected', '1')
+    setUI('Strava connected', 'Importing your recent runs now.', 'success', 'Open Matty 7.0')
+    setTimeout(() => { location.href = APP_URL + '#strava_connected' }, 1100)
+  } catch (error) {
+    setUI('Connection failed', error.message + '. Check the Strava app settings in Vercel.', 'error', 'Back to Matty 7.0')
+  }
+}
+</script>
+</body>
+</html>
