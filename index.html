@@ -161,8 +161,16 @@
     <h2 class="settings-block-title">Integrations</h2>
     <div class="settings-list">
       <div class="settings-row">
+        <div class="sr-left"><div class="sr-icon" style="background:#ff375f;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 21s-7-4.4-7-11a4 4 0 0 1 7-2.5A4 4 0 0 1 19 10c0 6.6-7 11-7 11Z"/><path d="M3 12h4l2-4 3 8 2-4h7"/></svg></div><span class="sr-label">Apple Fitness</span></div>
+        <span class="badge-on">Shortcut</span>
+      </div>
+      <div class="settings-row">
+        <span class="sr-label">Last Apple import</span>
+        <span class="integration-detail" id="appleSyncStatus">Waiting for first run</span>
+      </div>
+      <div class="settings-row">
         <div class="sr-left"><div class="sr-icon" style="background:#FC4C02;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="14" cy="4.5" r="2"/><path d="m12 8-3 4 4 2 2.5 6M12 8l4 3 3-1M9 12l-5 6"/></svg></div><span class="sr-label">Strava</span></div>
-        <div id="stravaStatus"><button class="connect-link" onclick="connectStrava()">Connect →</button></div>
+        <div id="stravaStatus"><button class="connect-link" onclick="connectStrava()">Fallback →</button></div>
       </div>
       <div class="settings-row">
         <span class="sr-label">Last Strava sync</span>
@@ -303,7 +311,7 @@ function showPage(id) {
   activeTab.setAttribute('aria-current', 'page')
   document.getElementById('fab').style.display = ['today','running','strength'].includes(id) ? 'flex' : 'none'
   window.scrollTo(0,0)
-  const loaders = {today:loadToday, running:loadRunning, strength:loadStrength, recovery:loadRecovery, analytics:loadAnalytics}
+  const loaders = {today:loadToday, running:loadRunning, strength:loadStrength, recovery:loadRecovery, analytics:loadAnalytics, settings:loadAppleFitnessStatus}
   if (loaders[id]) loaders[id]()
 }
 
@@ -431,7 +439,7 @@ function renderRunItems(runs, elId) {
   const el = document.getElementById(elId)
   if (!el) return
   if (!runs.length) {
-    el.innerHTML = '<div class="empty"><div class="empty-title">No runs yet</div><div class="empty-text">Runs sync automatically from Strava, or log one manually with the add button.</div></div>'
+    el.innerHTML = '<div class="empty"><div class="empty-title">No runs yet</div><div class="empty-text">Apple Fitness imports after your Watch workout ends, or you can log a run manually.</div></div>'
     return
   }
   el.innerHTML = '<div class="card-list">'+runs.map(r => {
@@ -517,6 +525,27 @@ async function loadAnalytics() {
     byWeek[wk]=(byWeek[wk]||0)+(r.distance_km||0)
   })
   document.getElementById('volList').innerHTML=Object.entries(byWeek).sort((a,b)=>b[0].localeCompare(a[0])).slice(0,6).map(([wk,km])=>'<div class="vol-row"><span class="vol-wk">Wk of '+wk+'</span><span class="vol-km">'+km.toFixed(1)+' km</span></div>').join('')||'<div style="color:var(--muted);font-size:14px;">No data yet</div>'
+}
+
+async function loadAppleFitnessStatus() {
+  const el = document.getElementById('appleSyncStatus')
+  if (!el) return
+  const { data, error } = await db
+    .from('runs')
+    .select('created_at,date')
+    .eq('source', 'apple_fitness')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) {
+    el.textContent = 'Setup required'
+    return
+  }
+  if (!data) {
+    el.textContent = 'Waiting for first run'
+    return
+  }
+  el.textContent = new Date(data.created_at).toLocaleString()
 }
 
 // ── STRAVA ──
@@ -841,6 +870,7 @@ async function syncStrava() {
         : null
       const { error } = await db.from('runs').upsert({
         strava_id: activity.id,
+        source: 'strava',
         date: activity.start_date_local.slice(0, 10),
         session_type: inferRunType(activity),
         distance_km: +distanceKm.toFixed(2),
@@ -990,6 +1020,7 @@ async function syncAll() {
 
 // ── INIT ──
 loadToday()
+loadAppleFitnessStatus()
 if (whoopJustConnected) setTimeout(syncWhoop, 500)
 if (stravaJustConnected) setTimeout(syncStrava, 500)
 </script>

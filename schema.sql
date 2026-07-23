@@ -8,6 +8,8 @@ create extension if not exists "uuid-ossp";
 create table if not exists runs (
   id uuid default gen_random_uuid() primary key,
   strava_id bigint unique,
+  source text not null default 'manual',
+  apple_workout_id text,
   date date not null,
   session_type text default 'easy',
   distance_km numeric(5,2),
@@ -115,6 +117,8 @@ create policy "Allow all" on hm_plan for all using (true) with check (true);
 
 -- Indexes for performance
 create index if not exists runs_date_idx on runs(date desc);
+create unique index if not exists runs_apple_workout_id_unique on runs(apple_workout_id);
+create index if not exists runs_source_date_idx on runs(source, date desc);
 create index if not exists gym_sessions_date_idx on gym_sessions(date desc);
 create index if not exists recovery_date_idx on recovery(date desc);
 create index if not exists sleep_date_idx on sleep(date desc);
