@@ -86,7 +86,7 @@ create table if not exists hm_plan (
   phase integer not null,
   phase_name text not null,
   day_of_week text not null,
-  planned_date date not null,
+  planned_date date unique not null,
   session_type text not null,
   description text,
   target_distance_km numeric(5,2),
