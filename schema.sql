@@ -27,7 +27,8 @@ create table if not exists runs (
 -- 2. GYM SESSIONS
 create table if not exists gym_sessions (
   id uuid default gen_random_uuid() primary key,
-  whoop_activity_id bigint unique,
+  -- WHOOP API v2 activity IDs are UUID strings.
+  whoop_activity_id text unique,
   date date not null,
   start_time timestamptz,
   end_time timestamptz,
@@ -118,4 +119,3 @@ create index if not exists gym_sessions_date_idx on gym_sessions(date desc);
 create index if not exists recovery_date_idx on recovery(date desc);
 create index if not exists sleep_date_idx on sleep(date desc);
 create index if not exists hm_plan_date_idx on hm_plan(planned_date asc);
-

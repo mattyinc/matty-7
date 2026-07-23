@@ -23,66 +23,73 @@ p{font-size:15px;color:rgba(255,255,255,.6);line-height:1.6;margin-bottom:24px;}
   <div id="action"></div>
 </div>
 <script>
-const CLIENT_ID = 'cfb9e9ce-57a9-4ef9-9970-5b9994bd23a3'
-const CLIENT_SECRET = '379c0ea71937c45c2cd11a8fc86cc8cbc2d405cff1581580a640178766402932'
+const API_BASE = 'https://matty-7.vercel.app'
 const REDIRECT_URI = 'https://mattyinc.github.io/matty-7/auth/callback.html'
 const APP_URL = 'https://mattyinc.github.io/matty-7'
 
 const params = new URLSearchParams(window.location.search)
 const error = params.get('error')
 const code = params.get('code')
+const returnedState = params.get('state')
+const expectedState = localStorage.getItem('whoop_state')
 
-function setUI(icon, title, msg, actionHTML) {
+function setUI(icon, title, message, tone, actionLabel) {
   document.getElementById('icon').textContent = icon
   document.getElementById('title').textContent = title
-  document.getElementById('msg').innerHTML = msg
-  document.getElementById('action').innerHTML = actionHTML || ''
+  const msg = document.getElementById('msg')
+  msg.textContent = message
+  msg.className = tone || ''
+  const action = document.getElementById('action')
+  action.textContent = ''
+  if (actionLabel) {
+    const link = document.createElement('a')
+    link.className = 'btn'
+    link.href = APP_URL
+    link.textContent = actionLabel
+    action.appendChild(link)
+  }
 }
 
 if (error) {
   setUI('❌', 'Connection Failed',
-    '<span class="error">' + (params.get('error_description') || error) + '</span>',
-    '<a class="btn" href="' + APP_URL + '">← Back to App</a>')
+    params.get('error_description') || error, 'error', 'Back to Matty 7.0')
 } else if (!code) {
-  setUI('❓', 'No Code', 'No authorization code received.',
-    '<a class="btn" href="' + APP_URL + '">← Back to App</a>')
+  setUI('❓', 'No Code', 'Whoop did not return an authorization code.',
+    'error', 'Back to Matty 7.0')
+} else if (!expectedState || returnedState !== expectedState) {
+  setUI('❌', 'Security Check Failed',
+    'The Whoop login state did not match. Start the connection again from Settings.',
+    'error', 'Back to Matty 7.0')
 } else {
+  localStorage.removeItem('whoop_state')
   exchangeToken(code)
 }
 
 async function exchangeToken(code) {
   try {
-    const res = await fetch('https://api.prod.whoop.com/oauth/oauth2/token', {
+    const res = await fetch(API_BASE + '/api/whoop/callback', {
       method: 'POST',
-      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        code: code,
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET,
-        redirect_uri: REDIRECT_URI
-      })
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ code, redirect_uri: REDIRECT_URI })
     })
-    const data = await res.json()
+    const data = await res.json().catch(() => ({}))
 
-    if (data.access_token) {
+    if (res.ok && data.access_token) {
       localStorage.setItem('whoop_access_token', data.access_token)
       localStorage.setItem('whoop_refresh_token', data.refresh_token || '')
+      localStorage.setItem('whoop_token_expires_at', String(Date.now() + ((data.expires_in || 3600) * 1000)))
       localStorage.setItem('whoop_connected', '1')
       setUI('✅', 'Whoop Connected!',
-        '<span class="success">Syncing your data now...</span>',
-        '<a class="btn" href="' + APP_URL + '">Open Matty 7.0 →</a>')
-      setTimeout(() => { window.location.href = APP_URL }, 1500)
+        'Connection complete. Opening your dashboard and starting a sync.',
+        'success', 'Open Matty 7.0')
+      setTimeout(() => { window.location.href = APP_URL + '#whoop_connected' }, 1200)
     } else {
-      throw new Error(data.error_description || data.error || JSON.stringify(data))
+      throw new Error(data.error || 'The token exchange was rejected')
     }
-  } catch(e) {
-    // CORS likely blocked client-side exchange — store code for Vercel to handle
-    // But we can still store it and let the app pick it up
-    localStorage.setItem('whoop_auth_code', code)
-    setUI('⚠️', 'One More Step',
-      'Direct exchange blocked by CORS. Tap below — the app will complete the connection via your stored code.',
-      '<a class="btn" href="' + APP_URL + '#setup_whoop">Complete in App →</a>')
+  } catch (error) {
+    setUI('❌', 'Connection Failed',
+      error.message + '. Check the Vercel Whoop environment variables, then try again.',
+      'error', 'Back to Matty 7.0')
   }
 }
 </script>
