@@ -520,10 +520,20 @@ async function loadAnalytics() {
 }
 
 // ── STRAVA ──
-function connectStrava() {
-  const state = Array.from(crypto.getRandomValues(new Uint8Array(8)), byte => (byte % 36).toString(36)).join('')
-  localStorage.setItem('strava_state', state)
-  window.location.href = API_BASE + '/api/strava/authorize?state=' + encodeURIComponent(state)
+async function connectStrava() {
+  try {
+    const response = await fetch(API_BASE + '/api/strava/callback')
+    const config = await response.json().catch(() => ({}))
+    if (!response.ok || !config.ok) {
+      throw new Error('Strava needs STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET in Vercel first')
+    }
+    const state = Array.from(crypto.getRandomValues(new Uint8Array(8)), byte => (byte % 36).toString(36)).join('')
+    localStorage.setItem('strava_state', state)
+    window.location.href = API_BASE + '/api/strava/authorize?state=' + encodeURIComponent(state)
+  } catch (error) {
+    updateStravaSyncStatus(error.message, true)
+    alert(error.message)
+  }
 }
 
 function updateStravaSyncStatus(message, isError = false) {
