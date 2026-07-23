@@ -778,7 +778,9 @@ async function syncWhoop() {
       if (!date || !strengthIds.includes(r.sport_id)) continue
       const dur = r.start && r.end ? Math.round((new Date(r.end) - new Date(r.start)) / 60000) : null
       const { error } = await db.from('gym_sessions').upsert({
-        whoop_activity_id: r.id,
+        // Existing databases used bigint; WHOOP v2 also returns the legacy numeric ID.
+        // New databases store the canonical UUID string.
+        whoop_activity_id: r.v1_id || r.id,
         date,
         start_time: r.start,
         end_time: r.end,
